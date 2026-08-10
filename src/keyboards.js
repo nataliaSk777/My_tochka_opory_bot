@@ -18,15 +18,30 @@ export function createMainMenuKeyboard() {
   return Markup.inlineKeyboard(rows);
 }
 
-export function createCancelKeyboard() {
+export function createScenarioKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("Завершить разговор", "cancel_session")],
-    [Markup.button.callback("Вернуться в меню", "show_menu")]
+    [
+      Markup.button.callback(
+        "Остановиться здесь",
+        "pause_session"
+      )
+    ],
+    [
+      Markup.button.callback(
+        "Выбрать другое состояние",
+        "show_menu"
+      )
+    ]
   ]);
 }
 
 export function createAfterCompletionKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("Выбрать другое состояние", "show_menu")]
+    [
+      Markup.button.callback(
+        "Выбрать другое состояние",
+        "show_menu"
+      )
+    ]
   ]);
 }
