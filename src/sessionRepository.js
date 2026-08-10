@@ -115,7 +115,10 @@ export async function deleteSession(telegramId) {
   );
 }
 
-export async function completeSession(telegramId) {
+async function archiveSession(
+  telegramId,
+  completionStatus
+) {
   const client = await pool.connect();
 
   try {
@@ -149,15 +152,17 @@ export async function completeSession(telegramId) {
           scenario_id,
           answers,
           started_at,
-          completed_at
+          completed_at,
+          completion_status
         )
-        VALUES ($1, $2, $3::jsonb, $4, NOW());
+        VALUES ($1, $2, $3::jsonb, $4, NOW(), $5);
       `,
       [
         session.telegram_id,
         session.scenario_id,
         JSON.stringify(session.answers),
-        session.started_at
+        session.started_at,
+        completionStatus
       ]
     );
 
@@ -178,4 +183,18 @@ export async function completeSession(telegramId) {
   } finally {
     client.release();
   }
+}
+
+export async function completeSession(telegramId) {
+  return archiveSession(
+    telegramId,
+    "completed"
+  );
+}
+
+export async function pauseSession(telegramId) {
+  return archiveSession(
+    telegramId,
+    "paused"
+  );
 }
