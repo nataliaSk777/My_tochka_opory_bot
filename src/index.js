@@ -19,7 +19,7 @@ import {
 import {
   getScenario,
   scenarioList
-} from "./scenarios.js";
+} from "./scenarioCatalog.js";
 import {
   completeSession,
   createSession,
