@@ -1,5 +1,7 @@
 import { Markup } from "telegraf";
-import { scenarioList } from "./scenarios.js";
+import { scenarios } from "./scenarios.js";
+
+const scenarioList = Object.values(scenarios);
 
 export function createMainMenuKeyboard() {
   const buttons = scenarioList.map((scenario) =>
