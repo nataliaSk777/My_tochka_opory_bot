@@ -1,5 +1,5 @@
 import { Markup } from "telegraf";
-import { scenarios } from "./scenarios.js";
+import { scenarios } from "./scenarioCatalog.js";
 
 const scenarioList = Object.values(scenarios);
 
