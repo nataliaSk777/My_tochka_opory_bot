@@ -1,4 +1,4 @@
-import { getScenario } from "./scenarios.js";
+import { getScenario } from "./scenarioCatalog.js";
 import {
   completeSession,
   deleteSession,
