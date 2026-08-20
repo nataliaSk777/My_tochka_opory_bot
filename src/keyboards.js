@@ -20,12 +20,12 @@ export function createMainMenuKeyboard() {
   return Markup.inlineKeyboard(rows);
 }
 
-export function createScenarioKeyboard() {
+export function createCancelKeyboard() {
   return Markup.inlineKeyboard([
     [
       Markup.button.callback(
         "Остановиться здесь",
-        "pause_session"
+        "cancel_session"
       )
     ],
     [
