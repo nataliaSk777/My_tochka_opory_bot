@@ -1,19 +1,18 @@
-function requireEnvironmentVariable(name) {
+function requireEnv(name) {
   const value = process.env[name];
 
-  if (!value || value.trim() === "") {
-    throw new Error(`Не задана обязательная переменная окружения: ${name}`);
+  if (!value) {
+    throw new Error(
+      `Не задана обязательная переменная окружения: ${name}`
+    );
   }
 
-  return value.trim();
+  return value;
 }
 
 export const config = {
-  botToken: requireEnvironmentVariable("BOT_TOKEN"),
-  databaseUrl: requireEnvironmentVariable("DATABASE_URL"),
-  nodeEnv: process.env.NODE_ENV || "production",
-  port: Number.parseInt(process.env.PORT || "3000", 10),
-  adminId: process.env.ADMIN_ID
-    ? Number.parseInt(process.env.ADMIN_ID, 10)
-    : null
+  botToken: requireEnv("BOT_TOKEN"),
+  databaseUrl: requireEnv("DATABASE_URL"),
+  port: Number(process.env.PORT || 3000),
+  nodeEnv: process.env.NODE_ENV || "production"
 };
