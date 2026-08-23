@@ -1,12 +1,11 @@
 {
   "name": "tochka-opory-bot",
-  "version": "1.0.0",
-  "description": "Telegram-бот для бережной самоподдержки и проживания внутренних состояний",
+  "version": "1.1.0",
+  "description": "Telegram-бот для бережной самоподдержки",
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "start": "node src/index.js"
   },
   "engines": {
     "node": ">=20"
