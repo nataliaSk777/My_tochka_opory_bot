@@ -2,37 +2,56 @@ import http from "node:http";
 import { Telegraf } from "telegraf";
 
 import { config } from "./config.js";
+
 import {
   closeDatabase,
   initializeDatabase,
   pool
 } from "./database.js";
+
 import {
-  createAfterCompletionKeyboard,
+  createAfterFeedbackKeyboard,
   createCancelKeyboard,
-  createMainMenuKeyboard
+  createFeedbackSkipKeyboard,
+  createMainMenuKeyboard,
+  createOutcomeKeyboard
 } from "./keyboards.js";
+
 import {
   detectImmediateRisk,
   immediateRiskMessage
 } from "./safety.js";
+
 import {
   getScenario,
   scenarioList
-} from "./scenarioCatalog.js";
+} from "./scenarios.js";
+
 import {
+  cancelActiveSession,
+  clearPendingInput,
   completeSession,
   createSession,
-  deleteSession,
-  getSession,
+  getActiveSession,
+  getPendingInput,
+  logEvent,
   saveAnswer,
-  saveUser
+  saveFeedback,
+  saveOutcome,
+  saveUser,
+  setPendingInput
 } from "./sessionRepository.js";
 
-const bot = new Telegraf(config.botToken);
+const bot =
+  new Telegraf(
+    config.botToken
+  );
 
 function getFirstName(ctx) {
-  return ctx.from?.first_name?.trim() || "друг";
+  return (
+    ctx.from?.first_name?.trim() ||
+    "друг"
+  );
 }
 
 async function registerUser(ctx) {
@@ -43,29 +62,62 @@ async function registerUser(ctx) {
   await saveUser(ctx.from);
 }
 
-async function sendMainMenu(ctx, introductoryText = null) {
+async function sendMainMenu(
+  ctx,
+  introductoryText = null
+) {
   const text =
     introductoryText ||
     [
       "Что тебе сейчас нужно?",
       "",
-      "Выбери состояние. Бот будет задавать вопросы по одному и не станет принимать решение за тебя."
+      "Выбери состояние. Я буду задавать вопросы по одному — без оценок и готовых решений."
     ].join("\n");
 
-  await ctx.reply(text, createMainMenuKeyboard());
+  await ctx.reply(
+    text,
+    createMainMenuKeyboard()
+  );
 }
 
-async function startScenario(ctx, scenarioId) {
-  const scenario = getScenario(scenarioId);
+async function startScenario(
+  ctx,
+  scenarioId
+) {
+  const scenario =
+    getScenario(scenarioId);
 
-  if (!scenario || !ctx.from) {
-    await ctx.reply("Этот сценарий пока недоступен.");
+  if (
+    !scenario ||
+    !ctx.from
+  ) {
+    await ctx.reply(
+      "Этот сценарий пока недоступен."
+    );
+
     return;
   }
 
-  await createSession(ctx.from.id, scenario.id);
+  if (!scenario.steps.length) {
+    await ctx.reply(
+      "В этом сценарии пока нет вопросов."
+    );
 
-  const firstStep = scenario.steps[0];
+    return;
+  }
+
+  await clearPendingInput(
+    ctx.from.id
+  );
+
+  const session =
+    await createSession(
+      ctx.from.id,
+      scenario.id
+    );
+
+  const firstStep =
+    scenario.steps[0];
 
   await ctx.reply(
     [
@@ -73,78 +125,158 @@ async function startScenario(ctx, scenarioId) {
       "",
       scenario.introduction,
       "",
-      `Первый вопрос:`,
       firstStep.question
     ].join("\n"),
     createCancelKeyboard()
   );
+
+  return session;
 }
 
-async function continueScenario(ctx, session, userAnswer) {
-  const scenario = getScenario(session.scenario_id);
+async function finishScenario(
+  ctx,
+  session,
+  scenario
+) {
+  const completedSession =
+    await completeSession({
+      telegramId:
+        ctx.from.id,
+
+      sessionId:
+        session.id,
+
+      scenarioId:
+        scenario.id
+    });
+
+  if (!completedSession) {
+    await ctx.reply(
+      "Не удалось завершить сценарий. Отправь /menu, чтобы вернуться в главное меню."
+    );
+
+    return;
+  }
+
+  await ctx.reply(
+    scenario.completion
+  );
+
+  await ctx.reply(
+    "Сейчас тебе стало легче или яснее?",
+    createOutcomeKeyboard(
+      completedSession.id
+    )
+  );
+}
+
+async function continueScenario(
+  ctx,
+  session,
+  userAnswer
+) {
+  const scenario =
+    getScenario(
+      session.scenario_id
+    );
 
   if (!scenario) {
-    await deleteSession(ctx.from.id);
+    await cancelActiveSession(
+      ctx.from.id
+    );
 
     await ctx.reply(
-      "Сценарий не найден. Я завершил незаконченный разговор, чтобы данные не смешались."
+      "Этот сценарий больше недоступен."
     );
 
     await sendMainMenu(ctx);
+
     return;
   }
 
-  const currentStep = scenario.steps[session.step_index];
+  const currentStep =
+    scenario.steps[
+      session.last_step_index
+    ];
 
   if (!currentStep) {
-    await completeSession(ctx.from.id);
-
-    await ctx.reply(
-      scenario.completion,
-      createAfterCompletionKeyboard()
+    await finishScenario(
+      ctx,
+      session,
+      scenario
     );
 
     return;
   }
 
-  const updatedSession = await saveAnswer({
-    telegramId: ctx.from.id,
-    questionId: currentStep.id,
-    question: currentStep.question,
-    answer: userAnswer
-  });
+  const updatedSession =
+    await saveAnswer({
+      telegramId:
+        ctx.from.id,
+
+      session,
+
+      stepIndex:
+        session.last_step_index,
+
+      questionId:
+        currentStep.id,
+
+      question:
+        currentStep.question,
+
+      answer:
+        userAnswer
+    });
 
   if (!updatedSession) {
     await ctx.reply(
-      "Не удалось сохранить ответ. Пожалуйста, выбери состояние заново."
+      "Не удалось сохранить ответ. Отправь /menu и попробуй снова."
     );
 
-    await sendMainMenu(ctx);
     return;
   }
 
-  const nextStep = scenario.steps[updatedSession.step_index];
+  const nextStep =
+    scenario.steps[
+      updatedSession.last_step_index
+    ];
 
   if (!nextStep) {
-    await completeSession(ctx.from.id);
-
-    await ctx.reply(
-      [
-        "Спасибо. Я сохранил твои ответы.",
-        "",
-        scenario.completion
-      ].join("\n"),
-      createAfterCompletionKeyboard()
+    await finishScenario(
+      ctx,
+      updatedSession,
+      scenario
     );
 
     return;
   }
 
-  await ctx.reply(nextStep.question, createCancelKeyboard());
+  await ctx.reply(
+    nextStep.question,
+    createCancelKeyboard()
+  );
+}
+
+function shouldAskForDetails(
+  outcome,
+  sessionId
+) {
+  if (outcome === "no") {
+    return true;
+  }
+
+  return (
+    Number(sessionId) % 4 === 0
+  );
 }
 
 bot.start(async (ctx) => {
   await registerUser(ctx);
+
+  await clearPendingInput(
+    ctx.from.id
+  );
 
   await ctx.reply(
     [
@@ -152,183 +284,527 @@ bot.start(async (ctx) => {
       "",
       "Я — «Точка опоры».",
       "",
-      "Я не принимаю решения за тебя и не выношу оценок. Я задаю вопросы, которые помогают услышать себя, немного прояснить ситуацию и найти ближайшую опору.",
+      "Я задаю вопросы, которые помогают услышать себя, немного прояснить происходящее и найти ближайшую опору.",
       "",
-      "Это не медицинская или экстренная помощь. При непосредственной опасности нужно обращаться к людям и службам, которые могут помочь в реальности."
+      "Я не принимаю решения за тебя и не оцениваю твои ответы.",
+      "",
+      "Ответы и данные о прохождении могут сохраняться, чтобы бот мог продолжать разговор и чтобы мы могли улучшать его сценарии.",
+      "",
+      "«Точка опоры» не заменяет медицинскую, психологическую или экстренную помощь."
     ].join("\n")
   );
 
   await sendMainMenu(ctx);
 });
 
-bot.command("menu", async (ctx) => {
-  await registerUser(ctx);
-  await sendMainMenu(ctx);
-});
+bot.command(
+  "menu",
+  async (ctx) => {
+    await registerUser(ctx);
 
-bot.command("cancel", async (ctx) => {
-  await registerUser(ctx);
-  await deleteSession(ctx.from.id);
-
-  await ctx.reply("Разговор завершён. Твои границы важнее сценария.");
-
-  await sendMainMenu(ctx);
-});
-
-bot.command("ping", async (ctx) => {
-  await registerUser(ctx);
-
-  const databaseCheck = await pool.query(
-    "SELECT NOW() AS current_time;"
-  );
-
-  const databaseTime = databaseCheck.rows[0].current_time;
-
-  await ctx.reply(
-    [
-      "Бот работает.",
-      "Соединение с PostgreSQL работает.",
-      `Время базы данных: ${databaseTime.toISOString()}`
-    ].join("\n")
-  );
-});
-
-bot.command("scenarios", async (ctx) => {
-  const list = scenarioList
-    .map((scenario) => `${scenario.emoji} ${scenario.title}`)
-    .join("\n");
-
-  await ctx.reply(`Сейчас доступны:\n\n${list}`);
-});
-
-bot.action(/^scenario:(.+)$/, async (ctx) => {
-  await ctx.answerCbQuery();
-  await registerUser(ctx);
-
-  const scenarioId = ctx.match[1];
-
-  await startScenario(ctx, scenarioId);
-});
-
-bot.action("cancel_session", async (ctx) => {
-  await ctx.answerCbQuery();
-  await registerUser(ctx);
-  await deleteSession(ctx.from.id);
-
-  await ctx.reply(
-    "Разговор завершён. Необязательно заканчивать внутреннюю работу за один раз."
-  );
-
-  await sendMainMenu(ctx);
-});
-
-bot.action("show_menu", async (ctx) => {
-  await ctx.answerCbQuery();
-  await registerUser(ctx);
-  await sendMainMenu(ctx);
-});
-
-bot.on("text", async (ctx) => {
-  await registerUser(ctx);
-
-  const text = ctx.message.text.trim();
-
-  if (!text) {
-    return;
-  }
-
-  if (text.startsWith("/")) {
-    return;
-  }
-
-  if (detectImmediateRisk(text)) {
-    await deleteSession(ctx.from.id);
-    await ctx.reply(immediateRiskMessage);
-    return;
-  }
-
-  const session = await getSession(ctx.from.id);
-
-  if (!session) {
-    await ctx.reply(
-      "Сначала выбери состояние, с которым хочешь поработать."
+    await clearPendingInput(
+      ctx.from.id
     );
 
     await sendMainMenu(ctx);
-    return;
   }
+);
 
-  await continueScenario(ctx, session, text);
-});
+bot.command(
+  "cancel",
+  async (ctx) => {
+    await registerUser(ctx);
 
-bot.catch(async (error, ctx) => {
-  console.error(
-    `Ошибка при обработке Telegram update ${ctx.update.update_id}:`,
-    error
-  );
+    await clearPendingInput(
+      ctx.from.id
+    );
 
-  try {
+    await cancelActiveSession(
+      ctx.from.id
+    );
+
     await ctx.reply(
-      "Произошла техническая ошибка. Твой последний ответ мог не сохраниться. Отправь /menu, чтобы вернуться в главное меню."
+      "Разговор завершён. Можно вернуться к нему позже."
     );
-  } catch (replyError) {
-    console.error(
-      "Не удалось отправить сообщение об ошибке:",
-      replyError
+
+    await sendMainMenu(ctx);
+  }
+);
+
+bot.command(
+  "ping",
+  async (ctx) => {
+    await registerUser(ctx);
+
+    const databaseCheck =
+      await pool.query(
+        "SELECT NOW() AS current_time;"
+      );
+
+    const databaseTime =
+      databaseCheck.rows[0]
+        .current_time;
+
+    await ctx.reply(
+      [
+        "Бот работает.",
+        "Соединение с PostgreSQL работает.",
+        `Время базы данных: ${databaseTime.toISOString()}`
+      ].join("\n")
     );
   }
-});
+);
 
-function startHealthServer() {
-  const server = http.createServer((request, response) => {
-    if (request.url === "/health") {
-      response.writeHead(200, {
-        "Content-Type": "application/json; charset=utf-8"
+bot.command(
+  "scenarios",
+  async (ctx) => {
+    const list =
+      scenarioList
+        .map(
+          (scenario) =>
+            `${scenario.emoji} ${scenario.title}`
+        )
+        .join("\n");
+
+    await ctx.reply(
+      `Сейчас доступны:\n\n${list}`
+    );
+  }
+);
+
+bot.action(
+  /^scenario:(.+)$/,
+  async (ctx) => {
+    await ctx.answerCbQuery();
+
+    await registerUser(ctx);
+
+    const scenarioId =
+      ctx.match[1];
+
+    await startScenario(
+      ctx,
+      scenarioId
+    );
+  }
+);
+
+bot.action(
+  "cancel_session",
+  async (ctx) => {
+    await ctx.answerCbQuery();
+
+    await registerUser(ctx);
+
+    await clearPendingInput(
+      ctx.from.id
+    );
+
+    await cancelActiveSession(
+      ctx.from.id
+    );
+
+    await ctx.reply(
+      "Разговор завершён. Необязательно заканчивать внутреннюю работу за один раз."
+    );
+
+    await sendMainMenu(ctx);
+  }
+);
+
+bot.action(
+  "show_menu",
+  async (ctx) => {
+    await ctx.answerCbQuery();
+
+    await registerUser(ctx);
+
+    await clearPendingInput(
+      ctx.from.id
+    );
+
+    await cancelActiveSession(
+      ctx.from.id
+    );
+
+    await sendMainMenu(ctx);
+  }
+);
+
+bot.action(
+  "creator_feedback",
+  async (ctx) => {
+    await ctx.answerCbQuery();
+
+    await registerUser(ctx);
+
+    const activeSession =
+      await getActiveSession(
+        ctx.from.id
+      );
+
+    await setPendingInput({
+      telegramId:
+        ctx.from.id,
+
+      type:
+        "creator_feedback",
+
+      sessionId:
+        activeSession?.id || null
+    });
+
+    await logEvent({
+      telegramId:
+        ctx.from.id,
+
+      sessionId:
+        activeSession?.id || null,
+
+      scenarioId:
+        activeSession
+          ?.scenario_id || null,
+
+      eventType:
+        "creator_feedback_opened",
+
+      stepIndex:
+        activeSession
+          ?.last_step_index || null
+    });
+
+    await ctx.reply(
+      [
+        "Напиши как есть.",
+        "",
+        "Что понравилось, что раздражает, где было непонятно, чего тебе не хватило или какую ситуацию хотелось бы здесь увидеть.",
+        "",
+        "Следующее сообщение я сохраню как обратную связь создателю."
+      ].join("\n")
+    );
+  }
+);
+
+bot.action(
+  /^outcome:(noticeably|slightly|no):(\d+)$/,
+  async (ctx) => {
+    await ctx.answerCbQuery();
+
+    await registerUser(ctx);
+
+    const outcome =
+      ctx.match[1];
+
+    const sessionId =
+      Number(ctx.match[2]);
+
+    const session =
+      await saveOutcome({
+        telegramId:
+          ctx.from.id,
+
+        sessionId,
+
+        outcome
       });
 
-      response.end(
-        JSON.stringify({
-          status: "ok",
-          service: "tochka-opory-bot",
-          timestamp: new Date().toISOString()
-        })
+    if (!session) {
+      await ctx.reply(
+        "Не удалось сохранить ответ."
       );
 
       return;
     }
 
-    response.writeHead(200, {
-      "Content-Type": "text/plain; charset=utf-8"
-    });
+    if (
+      shouldAskForDetails(
+        outcome,
+        sessionId
+      )
+    ) {
+      await setPendingInput({
+        telegramId:
+          ctx.from.id,
 
-    response.end("Точка опоры работает.");
-  });
+        type:
+          "outcome_feedback",
 
-  server.listen(config.port, "0.0.0.0", () => {
-    console.log(
-      `Служебный HTTP-сервер запущен на порту ${config.port}.`
+        sessionId
+      });
+
+      await ctx.reply(
+        "Что именно тебе сейчас помогло — или чего не хватило?",
+        createFeedbackSkipKeyboard()
+      );
+
+      return;
+    }
+
+    await clearPendingInput(
+      ctx.from.id
     );
-  });
+
+    await ctx.reply(
+      "Спасибо. Это помогает нам понимать, что в «Точке опоры» действительно работает.",
+      createAfterFeedbackKeyboard()
+    );
+  }
+);
+
+bot.action(
+  "skip_feedback",
+  async (ctx) => {
+    await ctx.answerCbQuery();
+
+    await registerUser(ctx);
+
+    await clearPendingInput(
+      ctx.from.id
+    );
+
+    await ctx.reply(
+      "Спасибо.",
+      createAfterFeedbackKeyboard()
+    );
+  }
+);
+
+bot.on(
+  "text",
+  async (ctx) => {
+    await registerUser(ctx);
+
+    const text =
+      ctx.message.text.trim();
+
+    if (!text) {
+      return;
+    }
+
+    if (
+      text.startsWith("/")
+    ) {
+      return;
+    }
+
+    if (
+      detectImmediateRisk(text)
+    ) {
+      await clearPendingInput(
+        ctx.from.id
+      );
+
+      await cancelActiveSession(
+        ctx.from.id
+      );
+
+      await ctx.reply(
+        immediateRiskMessage
+      );
+
+      return;
+    }
+
+    const pendingInput =
+      await getPendingInput(
+        ctx.from.id
+      );
+
+    if (
+      pendingInput?.type ===
+      "creator_feedback"
+    ) {
+      await saveFeedback({
+        telegramId:
+          ctx.from.id,
+
+        sessionId:
+          pendingInput.sessionId,
+
+        kind:
+          "creator",
+
+        message:
+          text
+      });
+
+      await clearPendingInput(
+        ctx.from.id
+      );
+
+      await ctx.reply(
+        "Спасибо. Сообщение сохранено — именно такие наблюдения особенно помогают улучшать бота.",
+        createAfterFeedbackKeyboard()
+      );
+
+      return;
+    }
+
+    if (
+      pendingInput?.type ===
+      "outcome_feedback"
+    ) {
+      await saveFeedback({
+        telegramId:
+          ctx.from.id,
+
+        sessionId:
+          pendingInput.sessionId,
+
+        kind:
+          "outcome",
+
+        message:
+          text
+      });
+
+      await clearPendingInput(
+        ctx.from.id
+      );
+
+      await ctx.reply(
+        "Спасибо. Это очень полезная обратная связь.",
+        createAfterFeedbackKeyboard()
+      );
+
+      return;
+    }
+
+    const session =
+      await getActiveSession(
+        ctx.from.id
+      );
+
+    if (!session) {
+      await ctx.reply(
+        "Сначала выбери состояние, с которым хочешь поработать."
+      );
+
+      await sendMainMenu(ctx);
+
+      return;
+    }
+
+    await continueScenario(
+      ctx,
+      session,
+      text
+    );
+  }
+);
+
+bot.catch(
+  async (error, ctx) => {
+    console.error(
+      `Ошибка Telegram update ${ctx.update.update_id}:`,
+      error
+    );
+
+    try {
+      await ctx.reply(
+        "Произошла техническая ошибка. Отправь /menu, чтобы вернуться в главное меню."
+      );
+    } catch (replyError) {
+      console.error(
+        "Не удалось отправить сообщение об ошибке:",
+        replyError
+      );
+    }
+  }
+);
+
+function startHealthServer() {
+  const server =
+    http.createServer(
+      (
+        request,
+        response
+      ) => {
+        if (
+          request.url ===
+          "/health"
+        ) {
+          response.writeHead(
+            200,
+            {
+              "Content-Type":
+                "application/json; charset=utf-8"
+            }
+          );
+
+          response.end(
+            JSON.stringify({
+              status: "ok",
+              service:
+                "tochka-opory-bot",
+              timestamp:
+                new Date()
+                  .toISOString()
+            })
+          );
+
+          return;
+        }
+
+        response.writeHead(
+          200,
+          {
+            "Content-Type":
+              "text/plain; charset=utf-8"
+          }
+        );
+
+        response.end(
+          "Точка опоры работает."
+        );
+      }
+    );
+
+  server.listen(
+    config.port,
+    "0.0.0.0",
+    () => {
+      console.log(
+        `HTTP-сервер запущен на порту ${config.port}.`
+      );
+    }
+  );
 
   return server;
 }
 
-async function shutdown(signal, healthServer) {
-  console.log(`Получен сигнал ${signal}. Завершаю работу.`);
+async function shutdown(
+  signal,
+  healthServer
+) {
+  console.log(
+    `Получен сигнал ${signal}. Завершаю работу.`
+  );
 
   try {
     bot.stop(signal);
 
-    await new Promise((resolve) => {
-      healthServer.close(() => resolve());
-    });
+    await new Promise(
+      (resolve) => {
+        healthServer.close(
+          () => resolve()
+        );
+      }
+    );
 
     await closeDatabase();
 
-    console.log("Работа завершена корректно.");
+    console.log(
+      "Работа завершена корректно."
+    );
+
     process.exit(0);
   } catch (error) {
-    console.error("Ошибка при завершении работы:", error);
+    console.error(
+      "Ошибка при завершении работы:",
+      error
+    );
+
     process.exit(1);
   }
 }
@@ -336,7 +812,8 @@ async function shutdown(signal, healthServer) {
 async function main() {
   await initializeDatabase();
 
-  const healthServer = startHealthServer();
+  const healthServer =
+    startHealthServer();
 
   await bot.telegram.setMyCommands([
     {
@@ -345,19 +822,23 @@ async function main() {
     },
     {
       command: "menu",
-      description: "Выбрать состояние"
+      description:
+        "Выбрать состояние"
     },
     {
       command: "cancel",
-      description: "Завершить текущий разговор"
+      description:
+        "Завершить текущий разговор"
     },
     {
       command: "scenarios",
-      description: "Посмотреть доступные сценарии"
+      description:
+        "Посмотреть доступные сценарии"
     },
     {
       command: "ping",
-      description: "Проверить работу бота"
+      description:
+        "Проверить работу бота"
     }
   ]);
 
@@ -365,18 +846,38 @@ async function main() {
     dropPendingUpdates: false
   });
 
-  console.log("Telegram-бот запущен.");
+  console.log(
+    "Telegram-бот запущен."
+  );
 
-  process.once("SIGINT", () => {
-    void shutdown("SIGINT", healthServer);
-  });
+  process.once(
+    "SIGINT",
+    () => {
+      void shutdown(
+        "SIGINT",
+        healthServer
+      );
+    }
+  );
 
-  process.once("SIGTERM", () => {
-    void shutdown("SIGTERM", healthServer);
-  });
+  process.once(
+    "SIGTERM",
+    () => {
+      void shutdown(
+        "SIGTERM",
+        healthServer
+      );
+    }
+  );
 }
 
-main().catch((error) => {
-  console.error("Бот не смог запуститься:", error);
-  process.exit(1);
-});
+main().catch(
+  (error) => {
+    console.error(
+      "Бот не смог запуститься:",
+      error
+    );
+
+    process.exit(1);
+  }
+);
